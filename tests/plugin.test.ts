@@ -1,282 +1,126 @@
 /**
- * Tests run against the plugin object directly — no CMS, no database.
- * `makeTestContext` stubs only the slice of PluginContext the code under
- * test touches; grow it as the plugin grows.
+ * Tests run against the plugin object directly — no CMS, no network. The
+ * context double covers kv, the `sessions` storage, `site` and `http`. What
+ * matters: every route is session-only (API tokens refused), the toolbar
+ * descriptor, and the session hand-off to the worker.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import plugin from "../src/plugin.js";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+type Handler = (event: unknown, ctx: unknown) => Promise<unknown>;
+const route = (name: string) => (plugin.routes![name] as { handler: Handler }).handler;
 
-// ── Test doubles ─────────────────────────────────────────────────────────
-
-interface Row {
-	id: string;
-	data: Record<string, unknown>;
-}
-
-function makeTestContext(rows: Row[] = [], settings: Record<string, unknown> = {}) {
-	const store = new Map<string, Record<string, unknown>>(rows.map((r) => [r.id, r.data]));
-	const kv = new Map<string, unknown>(
-		Object.entries(settings).map(([k, v]) => [`settings:${k}`, v]),
-	);
-
-	const tracked = {
-		get: async (id: string) => store.get(id) ?? null,
-		put: async (id: string, data: Record<string, unknown>) => {
-			store.set(id, data);
-		},
-		delete: async (id: string) => store.delete(id),
-		exists: async (id: string) => store.has(id),
-		count: async (where?: Record<string, unknown>) =>
-			[...store.values()].filter((d) => !where?.status || d.status === where.status).length,
-		// Minimal stand-in for the real query engine: supports the
-		// `status` equality and `updatedAt: { lt }` range the plugin uses.
-		query: async (options?: {
-			where?: Record<string, unknown>;
-			orderBy?: Record<string, "asc" | "desc">;
-			limit?: number;
-		}) => {
-			const where = options?.where ?? {};
-			let items = [...store.entries()].map(([id, data]) => ({ id, data }));
-
-			if (typeof where.status === "string") {
-				items = items.filter((i) => i.data.status === where.status);
-			}
-			const updatedAt = where.updatedAt as { lt?: string } | undefined;
-			if (updatedAt?.lt) {
-				items = items.filter((i) => String(i.data.updatedAt) < updatedAt.lt!);
-			}
-			items.sort((a, b) => String(a.data.updatedAt).localeCompare(String(b.data.updatedAt)));
-			return { items: items.slice(0, options?.limit ?? 50), cursor: undefined, hasMore: false };
-		},
-	};
-
+function ctxWith(opts: { settings?: Record<string, unknown>; fetch?: (url: string, init?: RequestInit) => Promise<Response> }) {
+	const kv = new Map<string, unknown>(Object.entries(opts.settings ?? {}).map(([k, v]) => [`settings:${k}`, v]));
+	const sessions = new Map<string, Record<string, unknown>>();
+	const calls: Array<{ url: string; init?: RequestInit }> = [];
 	const ctx = {
-		plugin: { id: "premium-starter", version: "0.1.0" },
-		storage: { tracked },
 		kv: {
-			get: async <T>(k: string) => (kv.has(k) ? (kv.get(k) as T) : null),
-			set: async (k: string, v: unknown) => {
-				kv.set(k, v);
-			},
-			delete: async (k: string) => kv.delete(k),
-			list: async (prefix = "") =>
-				[...kv.entries()]
-					.filter(([k]) => k.startsWith(prefix))
-					.map(([key, value]) => ({ key, value })),
+			get: async (k: string) => kv.get(k) ?? null,
+			set: async (k: string, v: unknown) => void kv.set(k, v),
 		},
-		log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-	} as unknown as import("@premium-cms/emdash").PluginContext;
-
-	return { ctx, store, kv };
-}
-
-function daysAgo(n: number): string {
-	return new Date(Date.now() - n * DAY_MS).toISOString();
-}
-
-function published(collection: string, title: string, ageDays: number) {
-	return {
-		updatedAt: daysAgo(ageDays),
-		collection,
-		status: "published",
-		title,
-		slug: title.toLowerCase().replace(/\s+/g, "-"),
-	};
-}
-
-async function callAdmin(ctx: import("@premium-cms/emdash").PluginContext, input: unknown) {
-	const route = plugin.routes?.admin;
-	if (!route || typeof route !== "object" || !("handler" in route)) {
-		throw new Error("admin route not found");
-	}
-	return route.handler({ input } as never, ctx);
-}
-
-async function callSave(
-	ctx: import("@premium-cms/emdash").PluginContext,
-	event: Record<string, unknown>,
-): Promise<void> {
-	const hook = plugin.hooks?.["content:afterSave"];
-	if (!hook || typeof hook !== "object" || !("handler" in hook)) {
-		throw new Error("content:afterSave hook not found");
-	}
-	await hook.handler(event as never, ctx);
-}
-
-// ── Tests ────────────────────────────────────────────────────────────────
-
-describe("content:afterSave", () => {
-	it("tracks a saved item under <collection>:<id>", async () => {
-		const { ctx, store } = makeTestContext();
-		await callSave(ctx, {
-			collection: "posts",
-			isNew: true,
-			content: { id: "42", slug: "hello", status: "published", data: { title: "Hello" } },
-		});
-
-		const row = store.get("posts:42");
-		expect(row).toBeDefined();
-		expect(row).toMatchObject({ collection: "posts", status: "published", title: "Hello" });
-	});
-
-	it("accepts numeric ids", async () => {
-		const { ctx, store } = makeTestContext();
-		await callSave(ctx, {
-			collection: "posts",
-			isNew: true,
-			content: { id: 7, slug: "seven", status: "published", data: {} },
-		});
-		expect(store.has("posts:7")).toBe(true);
-	});
-
-	it("skips collections outside the configured scope", async () => {
-		const { ctx, store } = makeTestContext([], { collections: "posts" });
-		await callSave(ctx, {
-			collection: "pages",
-			isNew: true,
-			content: { id: "1", slug: "about", status: "published", data: {} },
-		});
-		expect(store.size).toBe(0);
-	});
-
-	it("records nothing while tracking is disabled", async () => {
-		const { ctx, store } = makeTestContext([], { enabled: false });
-		await callSave(ctx, {
-			collection: "posts",
-			isNew: true,
-			content: { id: "1", slug: "x", status: "published", data: {} },
-		});
-		expect(store.size).toBe(0);
-	});
-});
-
-describe("content:afterDelete", () => {
-	it("removes the tracked row", async () => {
-		const { ctx, store } = makeTestContext([
-			{ id: "posts:1", data: published("posts", "Gone", 100) },
-		]);
-		const hook = plugin.hooks?.["content:afterDelete"];
-		if (!hook || typeof hook !== "object" || !("handler" in hook)) throw new Error("no hook");
-		await hook.handler({ collection: "posts", id: "1" } as never, ctx);
-		expect(store.has("posts:1")).toBe(false);
-	});
-});
-
-describe("stale route", () => {
-	let ctx: import("@premium-cms/emdash").PluginContext;
-
-	beforeEach(() => {
-		ctx = makeTestContext([
-			{ id: "posts:1", data: published("posts", "Ancient", 90) },
-			{ id: "posts:2", data: published("posts", "Fresh", 2) },
-			{ id: "pages:3", data: published("pages", "Old page", 60) },
-			{
-				id: "posts:4",
-				data: { ...published("posts", "Draft", 200), status: "draft" },
+		storage: {
+			sessions: {
+				get: async (id: string) => sessions.get(id) ?? null,
+				put: async (id: string, data: Record<string, unknown>) => void sessions.set(id, data),
+				query: async () => ({ items: [...sessions.entries()].map(([id, data]) => ({ id, data })), hasMore: false }),
 			},
-		]).ctx;
+		},
+		site: { name: "Site", url: "https://site.example", locale: "en" },
+		http: {
+			fetch: async (url: string, init?: RequestInit) => {
+				calls.push({ url, init });
+				return opts.fetch ? opts.fetch(url, init) : new Response("{}", { status: 200 });
+			},
+		},
+		log: { debug() {}, info() {}, warn() {}, error() {} },
+	};
+	return { ctx, sessions, calls };
+}
+
+const settings = { agentKey: "k", agentUrl: "https://agent.example", enabled: true, sessionHours: 2 };
+type Caller = { id: string; email: string; name: string; role: number; createdAt: string; tokenAuth?: boolean };
+const author: Caller = { id: "u1", email: "a@example.com", name: "Ann", role: 30, createdAt: "2026-01-01T00:00:00Z" };
+const viaToken: Caller = { ...author, tokenAuth: true };
+const reader: Caller = { ...author, role: 10 };
+const token = { token: `ec_pat_${"x".repeat(43)}`, tokenId: "tok1", expiresAt: "2026-12-31T00:00:00.000Z", pageUrl: "https://site.example/about" };
+
+describe("session-only surface", () => {
+	it("refuses API tokens, readers and anonymous callers on every route", async () => {
+		const { ctx } = ctxWith({ settings });
+		for (const name of ["toolbar", "session", "session/end", "settings", "settings/save"]) {
+			for (const user of [viaToken, reader, undefined]) {
+				const r = (await route(name)({ input: {}, user }, ctx)) as { success: boolean; error?: string };
+				expect(r.success, `${name} for ${user ? (user.tokenAuth ? "token" : "reader") : "anonymous"}`).toBe(false);
+			}
+		}
+		const page = (await route("admin")({ input: { type: "page_load" }, user: viaToken }, ctx)) as { blocks: Array<{ type: string }> };
+		expect(page.blocks.map((b) => b.type)).toEqual(["banner"]);
 	});
 
-	async function callStale(context = ctx, url = "https://example.com/stale") {
-		const route = plugin.routes?.stale;
-		if (!route || typeof route !== "object" || !("handler" in route)) throw new Error("no route");
-		return (await route.handler({ request: { url } } as never, context)) as {
-			items: Array<{ title: string; staleForDays: number }>;
-			staleAfterDays: number;
-		};
-	}
-
-	it("returns only published items past the threshold", async () => {
-		const result = await callStale();
-		const titles = result.items.map((i) => i.title);
-		expect(titles).toContain("Ancient");
-		expect(titles).toContain("Old page");
-		expect(titles).not.toContain("Fresh");
-		expect(titles).not.toContain("Draft");
-	});
-
-	it("orders oldest first and reports age in days", async () => {
-		const result = await callStale();
-		expect(result.items[0].title).toBe("Ancient");
-		expect(result.items[0].staleForDays).toBeGreaterThanOrEqual(89);
-	});
-
-	it("honours a custom threshold", async () => {
-		const scoped = makeTestContext(
-			[
-				{ id: "posts:1", data: published("posts", "Ancient", 90) },
-				{ id: "posts:2", data: published("posts", "Fresh", 2) },
-			],
-			{ staleAfterDays: 1 },
-		).ctx;
-		const result = await callStale(scoped);
-		expect(result.staleAfterDays).toBe(1);
-		expect(result.items).toHaveLength(2);
+	it("exposes no MCP tools", () => {
+		expect((plugin as { mcpTools?: unknown }).mcpTools).toBeUndefined();
 	});
 });
 
-describe("settings", () => {
-	it("falls back to defaults when nothing is stored", async () => {
-		const { ctx } = makeTestContext();
-		const route = plugin.routes?.settings;
-		if (!route || typeof route !== "object" || !("handler" in route)) throw new Error("no route");
-		expect(await route.handler({} as never, ctx)).toEqual({
-			staleAfterDays: 30,
-			collections: "all",
-			enabled: true,
+describe("toolbar", () => {
+	it("describes the Agent button for an editor session", async () => {
+		const { ctx } = ctxWith({ settings });
+		const r = (await route("toolbar")({ input: {}, user: author }, ctx)) as { label: string; script: string; config: Record<string, unknown> };
+		expect(r).toEqual({
+			label: "Agent",
+			script: "https://agent.example/toolbar.js",
+			config: {
+				session: "/_emdash/api/plugins/premium-cms-agent/session",
+				end: "/_emdash/api/plugins/premium-cms-agent/session/end",
+				purpose: "premium-cms-agent",
+				sessionSeconds: 7200,
+			},
 		});
 	});
 
-	it("ignores a non-positive threshold rather than storing junk", async () => {
-		const { ctx, kv } = makeTestContext([], { staleAfterDays: 30 });
-		await callAdmin(ctx, {
-			type: "form_submit",
-			action_id: "save_settings",
-			values: { staleAfterDays: -5 },
-		});
-		expect(kv.get("settings:staleAfterDays")).toBe(30);
-	});
-
-	it("persists a valid threshold from the admin form", async () => {
-		const { ctx, kv } = makeTestContext();
-		await callAdmin(ctx, {
-			type: "form_submit",
-			action_id: "save_settings",
-			values: { staleAfterDays: 14, collections: "posts", enabled: false },
-		});
-		expect(kv.get("settings:staleAfterDays")).toBe(14);
-		expect(kv.get("settings:collections")).toBe("posts");
-		expect(kv.get("settings:enabled")).toBe(false);
+	it("offers nothing while the key is missing or the plugin is off", async () => {
+		const off = ctxWith({ settings: { ...settings, enabled: false } });
+		expect(((await route("toolbar")({ input: {}, user: author }, off.ctx)) as { success: boolean }).success).toBe(false);
+		const noKey = ctxWith({ settings: { ...settings, agentKey: "" } });
+		expect(((await route("toolbar")({ input: {}, user: author }, noKey.ctx)) as { success: boolean }).success).toBe(false);
 	});
 });
 
-describe("admin route", () => {
-	it("renders the freshness page with a table and a settings form", async () => {
-		const { ctx } = makeTestContext([{ id: "posts:1", data: published("posts", "Ancient", 90) }]);
-		const result = (await callAdmin(ctx, { type: "page_load", page: "/freshness" })) as {
-			blocks: Array<Record<string, unknown>>;
-		};
-		const types = result.blocks.map((b) => b.type);
-		expect(types).toContain("header");
-		expect(types).toContain("table");
-		expect(types).toContain("form");
+describe("session", () => {
+	it("hands the editor's token to the worker and returns only the ticket", async () => {
+		const { ctx, sessions, calls } = ctxWith({
+			settings,
+			fetch: async (url) => (url.endsWith("/session") ? Response.json({ sessionId: "s1", ticket: "t1", expiresAt: token.expiresAt }) : Response.json({})),
+		});
+		const r = (await route("session")({ input: token, user: author }, ctx)) as Record<string, unknown>;
+		expect(r).toEqual({ success: true, sessionId: "s1", ticket: "t1", host: "https://agent.example", expiresAt: token.expiresAt });
+		const sent = JSON.parse(String(calls[0]?.init?.body));
+		expect(calls[0]?.url).toBe("https://agent.example/session");
+		expect(sent).toMatchObject({ siteUrl: "https://site.example", token: token.token, tokenId: "tok1", user: { id: "u1", role: 30 } });
+		expect(sessions.get("s1")).toMatchObject({ userId: "u1", tokenId: "tok1", status: "open", pageUrl: token.pageUrl });
 	});
 
-	it("renders the widget", async () => {
-		const { ctx } = makeTestContext([{ id: "posts:1", data: published("posts", "Ancient", 90) }]);
-		const result = (await callAdmin(ctx, {
-			type: "page_load",
-			page: "widget:stale-content",
-		})) as { blocks: Array<Record<string, unknown>> };
-		expect(result.blocks.length).toBeGreaterThan(0);
+	it("rejects malformed tokens before talking to the worker", async () => {
+		const { ctx, calls } = ctxWith({ settings });
+		const r = (await route("session")({ input: { ...token, token: "not-a-token" }, user: author }, ctx)) as { success: boolean };
+		expect(r.success).toBe(false);
+		expect(calls).toEqual([]);
 	});
 
-	it("returns no blocks for an unknown interaction", async () => {
-		const { ctx } = makeTestContext();
-		expect(await callAdmin(ctx, { type: "nonsense" })).toEqual({ blocks: [] });
+	it("ends only the caller's own session and reports the token to revoke", async () => {
+		const { ctx, sessions, calls } = ctxWith({
+			settings,
+			fetch: async (url) => (url.endsWith("/session") ? Response.json({ sessionId: "s1", ticket: "t1" }) : Response.json({ ok: true })),
+		});
+		await route("session")({ input: token, user: author }, ctx);
+		const other = (await route("session/end")({ input: { sessionId: "s1" }, user: { ...author, id: "u2" } }, ctx)) as { success: boolean };
+		expect(other.success).toBe(false);
+		const mine = (await route("session/end")({ input: { sessionId: "s1" }, user: author }, ctx)) as { success: boolean; tokenId: string };
+		expect(mine).toEqual({ success: true, tokenId: "tok1" });
+		expect(sessions.get("s1")).toMatchObject({ status: "closed" });
+		expect(calls.some((c) => c.url === "https://agent.example/session/s1" && c.init?.method === "DELETE")).toBe(true);
 	});
 });
