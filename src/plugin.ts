@@ -170,21 +170,29 @@ const plugin: SandboxedPlugin = {
 				const r = await ready(ctx);
 				if (!r.ok) return { success: false, error: r.error };
 				const input = isRecord(routeCtx.input) ? routeCtx.input : {};
-				const token = typeof input.token === "string" ? input.token : "";
-				const tokenId = typeof input.tokenId === "string" ? input.tokenId : "";
-				const expiresAt = typeof input.expiresAt === "string" ? input.expiresAt : "";
 				const pageUrl = typeof input.pageUrl === "string" ? input.pageUrl.slice(0, 500) : "";
-				if (!TOKEN_SHAPE.test(token) || !tokenId || !Number.isFinite(Date.parse(expiresAt))) {
+				const { user } = who;
+				// A new chat next to an existing one: the worker reuses that chat's token.
+				const parentId = typeof input.parent === "string" ? input.parent : "";
+				const parent = parentId ? await ctx.storage.sessions!.get(parentId) : null;
+				let token = typeof input.token === "string" ? input.token : "";
+				let tokenId = typeof input.tokenId === "string" ? input.tokenId : "";
+				let expiresAt = typeof input.expiresAt === "string" ? input.expiresAt : "";
+				if (parentId) {
+					if (!isSession(parent) || parent.userId !== user.id || parent.status !== "open") {
+						return { success: false, error: "Unknown parent chat." };
+					}
+					tokenId = parent.tokenId;
+					expiresAt = parent.expiresAt;
+					token = "";
+				} else if (!TOKEN_SHAPE.test(token) || !tokenId || !Number.isFinite(Date.parse(expiresAt))) {
 					return { success: false, error: "A session token (token, tokenId, expiresAt) is required." };
 				}
-				const { user } = who;
 				const res = await worker(ctx, r.settings, "POST", "/session", {
 					siteUrl: ctx.site.url,
 					siteName: ctx.site.name,
 					user: { id: user.id, name: user.name, email: user.email, role: user.role },
-					token,
-					tokenId,
-					expiresAt,
+					...(parentId ? { parent: parentId } : { token, tokenId, expiresAt }),
 					pageUrl,
 					model: r.settings.model,
 					reasoning: r.settings.reasoning,

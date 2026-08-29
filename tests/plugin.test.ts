@@ -103,6 +103,23 @@ describe("session", () => {
 		expect(sessions.get("s1")).toMatchObject({ userId: "u1", tokenId: "tok1", status: "open", pageUrl: token.pageUrl });
 	});
 
+	it("opens a child chat from a parent chat without a token, and refuses someone else's parent", async () => {
+		let n = 0;
+		const { ctx, sessions, calls } = ctxWith({
+			settings,
+			fetch: async (url) => (url.endsWith("/session") ? Response.json({ sessionId: `s${++n}`, ticket: `t${n}`, expiresAt: token.expiresAt }) : Response.json({})),
+		});
+		await route("session")({ input: token, user: author }, ctx);
+		const child = (await route("session")({ input: { parent: "s1", pageUrl: "https://site.example/pricing" }, user: author }, ctx)) as Record<string, unknown>;
+		expect(child).toMatchObject({ success: true, sessionId: "s2", ticket: "t2" });
+		const sent = JSON.parse(String(calls[1]?.init?.body));
+		expect(sent.parent).toBe("s1");
+		expect(sent.token).toBeUndefined();
+		expect(sessions.get("s2")).toMatchObject({ userId: "u1", tokenId: "tok1", status: "open" });
+		const other = (await route("session")({ input: { parent: "s1" }, user: { ...author, id: "u2" } }, ctx)) as { success: boolean };
+		expect(other.success).toBe(false);
+	});
+
 	it("rejects malformed tokens before talking to the worker", async () => {
 		const { ctx, calls } = ctxWith({ settings });
 		const r = (await route("session")({ input: { ...token, token: "not-a-token" }, user: author }, ctx)) as { success: boolean };

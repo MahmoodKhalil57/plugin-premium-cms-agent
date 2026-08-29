@@ -17,6 +17,25 @@ editor — and explain what it did.
   site MCP connection. The browser only ever holds a session ticket. Ending
   the session revokes the token.
 
+## Chats and history
+
+The panel keeps a history sidebar: every chat is its own Think session, listed
+in the browser's localStorage per site (switch, delete with confirmation; a
+compact transcript is cached so expired chats stay readable). The first chat
+in a browser mints the editor's session token; further chats are opened as
+children of an existing one (`session` route with `parent`), so the worker
+reuses that token and the browser never holds it. Deleting the last chat that
+uses a token revokes it.
+
+## Access model
+
+The chat token is an ordinary API token of the editor: the site's MCP endpoint
+authenticates it exactly like REST (policies ∩ the owner's current grants), so
+the assistant can do whatever the editor can — including handing frontend
+work to the GitHub agent through its MCP tools (`premium-github-agent__create_issue`
+etc.). The only things tokens cannot do are mint other tokens and call this
+plugin's routes, which are session-only.
+
 ## How it fits together
 
 ```

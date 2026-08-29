@@ -110,6 +110,14 @@ export class SiteAgent extends Think<Env> {
 		return { ok: true };
 	}
 
+	/** What a child chat inherits (the token stays on the worker); null once the session ended. */
+	async exportForChild(): Promise<Pick<SessionConfig, "siteUrl" | "siteName" | "user" | "token" | "expiresAt" | "model" | "reasoning"> | null> {
+		const c = this.config ?? ((await this.ctx.storage.get<SessionConfig>("session")) ?? null);
+		if (!c || Date.parse(c.expiresAt) <= Date.now()) return null;
+		const { siteUrl, siteName, user, token, expiresAt, model, reasoning } = c;
+		return { siteUrl, siteName, user, token, expiresAt, model, reasoning };
+	}
+
 	async verifyTicket(ticket: string): Promise<boolean> {
 		const c = this.config ?? ((await this.ctx.storage.get<SessionConfig>("session")) ?? null);
 		return !!c && ticket.length > 0 && c.ticket === ticket && Date.parse(c.expiresAt) > Date.now();
@@ -220,19 +228,23 @@ export default {
 		if (!env.AGENT_KEY || auth !== `Bearer ${env.AGENT_KEY}`) return json({ error: "unauthorized" }, 401);
 
 		if (request.method === "POST" && url.pathname === "/session") {
-			const body = (await request.json().catch(() => null)) as Partial<Omit<SessionConfig, "sessionId" | "ticket" | "origin">> | null;
+			const body = (await request.json().catch(() => null)) as
+				| (Partial<Omit<SessionConfig, "sessionId" | "ticket" | "origin">> & { parent?: unknown })
+				| null;
 			const user = body?.user;
-			if (
-				!body ||
-				typeof body.siteUrl !== "string" ||
-				!/^https:\/\//.test(body.siteUrl) ||
-				typeof body.token !== "string" ||
-				!/^ec_pat_/.test(body.token) ||
-				typeof body.expiresAt !== "string" ||
-				!Number.isFinite(Date.parse(body.expiresAt)) ||
-				!user ||
-				typeof user.id !== "string"
-			) {
+			if (!body || !user || typeof user.id !== "string") return json({ error: "user is required" }, 400);
+
+			// A child chat: reuse the parent's token and site (the plugin verified the parent belongs to this user).
+			let inherited: Awaited<ReturnType<SiteAgent["exportForChild"]>> = null;
+			if (typeof body.parent === "string") {
+				if (!SESSION_ID.test(body.parent)) return json({ error: "invalid parent" }, 400);
+				inherited = await (await getAgentByName(env.SiteAgent, body.parent)).exportForChild();
+				if (!inherited || inherited.user.id !== user.id) return json({ error: "parent session unavailable" }, 404);
+			}
+			const siteUrl = inherited?.siteUrl ?? (typeof body.siteUrl === "string" ? body.siteUrl.replace(/\/+$/, "") : "");
+			const token = inherited?.token ?? (typeof body.token === "string" ? body.token : "");
+			const expiresAt = inherited?.expiresAt ?? (typeof body.expiresAt === "string" ? body.expiresAt : "");
+			if (!/^https:\/\//.test(siteUrl) || !/^ec_pat_/.test(token) || !Number.isFinite(Date.parse(expiresAt))) {
 				return json({ error: "siteUrl (https), user, token and expiresAt are required" }, 400);
 			}
 			const sessionId = randomToken(16);
@@ -240,14 +252,14 @@ export default {
 			const config: SessionConfig = {
 				sessionId,
 				ticket,
-				siteUrl: body.siteUrl.replace(/\/+$/, ""),
-				siteName: typeof body.siteName === "string" ? body.siteName : "",
-				user: { id: user.id, name: user.name ?? null, email: user.email ?? "", role: Number(user.role ?? 0) },
-				token: body.token,
-				expiresAt: body.expiresAt,
+				siteUrl,
+				siteName: inherited?.siteName ?? (typeof body.siteName === "string" ? body.siteName : ""),
+				user: inherited?.user ?? { id: user.id, name: user.name ?? null, email: user.email ?? "", role: Number(user.role ?? 0) },
+				token,
+				expiresAt,
 				pageUrl: typeof body.pageUrl === "string" ? body.pageUrl : "",
-				model: typeof body.model === "string" && body.model ? body.model : undefined,
-				reasoning: body.reasoning,
+				model: typeof body.model === "string" && body.model ? body.model : inherited?.model,
+				reasoning: body.reasoning ?? inherited?.reasoning,
 				origin: url.origin,
 			};
 			const bridgeInit = await env.BrowserBridge.get(env.BrowserBridge.idFromName(sessionId)).fetch(
