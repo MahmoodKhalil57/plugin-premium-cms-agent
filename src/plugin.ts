@@ -500,7 +500,7 @@ async function skillsInteraction(ctx: PluginContext, user: Caller, i: SkillsInte
 			notice = denied;
 		} else {
 			const id = (i.block_id ?? "").startsWith("skill:") ? i.block_id!.slice("skill:".length) : "";
-			const existing = id && id !== "new" ? await getSkill(ctx, id) : null;
+			const existing = id && !id.startsWith("new") ? await getSkill(ctx, id) : null;
 			const r = await saveSkill(ctx, i.values ?? {}, existing, user);
 			if (r.ok) notice = `Skill "${r.skill.name}" saved${r.skill.roles.length ? "" : " — every role gets it"}.`;
 			else {
@@ -570,11 +570,12 @@ async function buildSkillsPage(ctx: PluginContext, user: Caller, opts: { notice?
 		blocks.push({ type: "banner", title: `Editing "${editing.name}"`, description: "Save below, or start a new skill instead." });
 		blocks.push({ type: "actions", elements: [{ type: "button", action_id: "skills.new", label: "New skill instead", style: "secondary" }] });
 	} else {
-		blocks.push({ type: "section", text: `**Add a skill** (${skills.length} of ${MAX_SKILLS})` });
+		blocks.push({ type: "section", text: `Add a skill (${skills.length} of ${MAX_SKILLS})` });
 	}
 	blocks.push({
 		type: "form",
-		block_id: `skill:${editing?.id ?? "new"}`,
+		// A fresh block id per render of the "new" form, so the admin widget does not keep the values just saved.
+		block_id: `skill:${editing?.id ?? `new-${skills.length}-${Date.now().toString(36)}`}`,
 		fields: [
 			{ type: "text_input", action_id: "name", label: "Name", placeholder: "product-page-style", initial_value: editing?.name ?? "" },
 			{

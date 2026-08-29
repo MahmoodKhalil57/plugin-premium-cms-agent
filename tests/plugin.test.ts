@@ -221,6 +221,7 @@ describe("skills", () => {
 		const { ctx, skills } = ctxWith({ settings });
 		const empty = (await route("admin")({ input: { type: "page_load", page: "/skills" }, user: admin }, ctx)) as { blocks: Array<{ type: string; fields?: Array<{ action_id: string; options?: Array<{ value: string }> }> }> };
 		expect(empty.blocks.map((b) => b.type)).toEqual(["header", "context", "table", "divider", "section", "form"]);
+		expect((empty.blocks.find((b) => b.type === "form") as { block_id?: string }).block_id).toMatch(/^skill:new-/);
 		const rolesField = empty.blocks.find((b) => b.type === "form")!.fields!.find((f) => f.action_id === "roles")!;
 		expect(rolesField.options!.map((o) => o.value)).toEqual(["role:admin", "role:editor", "role:copywriter"]);
 		const saved = (await route("admin")({ input: { type: "form_submit", action_id: "skills.save", block_id: "skill:new", values: skill() }, user: admin }, ctx)) as { blocks: Array<{ type: string; description?: string; rows?: Array<Record<string, string>>; elements?: Array<{ action_id: string; value: string }> }> };
