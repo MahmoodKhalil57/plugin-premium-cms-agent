@@ -174,10 +174,18 @@ export class SiteAgent extends Think<Env> {
 	}
 }
 
-function json(data: unknown, status = 200): Response {
+/** The chat client runs on the site's origin, so agent-route answers carry CORS headers (tickets, not cookies, gate them). */
+const CORS = {
+	"Access-Control-Allow-Origin": "*",
+	"Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+	"Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
+	"Access-Control-Max-Age": "86400",
+};
+
+function json(data: unknown, status = 200, cors = false): Response {
 	return new Response(JSON.stringify(data), {
 		status,
-		headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+		headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...(cors ? CORS : {}) },
 	});
 }
 
@@ -200,17 +208,18 @@ export default {
 
 		// Chat: the agents SDK routes WebSocket + HTTP to the session's object; the ticket gates both.
 		if (url.pathname.startsWith("/agents/")) {
+			if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 			const gate = async (req: Request) => {
 				const u = new URL(req.url);
 				const ticket = u.searchParams.get("ticket") ?? "";
 				const name = sessionFromAgentPath(u.pathname);
-				if (!SESSION_ID.test(name) || !ticket) return json({ error: "invalid ticket" }, 401);
+				if (!SESSION_ID.test(name) || !ticket) return json({ error: "invalid ticket" }, 401, true);
 				const agent = await getAgentByName(env.SiteAgent, name);
-				if (!(await agent.verifyTicket(ticket))) return json({ error: "invalid ticket" }, 401);
+				if (!(await agent.verifyTicket(ticket))) return json({ error: "invalid ticket" }, 401, true);
 				return undefined;
 			};
-			const routed = await routeAgentRequest(request, env, { onBeforeConnect: gate, onBeforeRequest: gate });
-			return routed ?? json({ error: "not found" }, 404);
+			const routed = await routeAgentRequest(request, env, { cors: true, onBeforeConnect: gate, onBeforeRequest: gate });
+			return routed ?? json({ error: "not found" }, 404, true);
 		}
 
 		// Browser bridge: the editor's socket and the agent's MCP endpoint.

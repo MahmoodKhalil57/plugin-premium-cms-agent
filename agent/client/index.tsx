@@ -107,6 +107,7 @@ const CSS = `
 #${ROOT_ID} .ea-msg { max-width: 92%; padding: 8px 11px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
 #${ROOT_ID} .ea-msg[data-role="user"] { align-self: flex-end; background: #2563eb; color: #fff; }
 #${ROOT_ID} .ea-msg[data-role="assistant"] { align-self: flex-start; background: rgba(255,255,255,0.07); }
+#${ROOT_ID} .ea-msg code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 4px; }
 #${ROOT_ID} .ea-tool { align-self: flex-start; font-size: 11px; color: #9ca3af; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 3px 8px; }
 #${ROOT_ID} .ea-tool[data-state="output-error"] { color: #fca5a5; }
 #${ROOT_ID} .ea-shot { max-width: 100%; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); margin-top: 4px; display: block; }
@@ -121,8 +122,38 @@ const CSS = `
 
 type Part = { type: string; text?: string; toolName?: string; state?: string; output?: unknown; errorText?: string };
 
+/** MCP tools arrive as `tool_<serverId>_<name>`; show the name. */
+function toolLabel(part: Part): string {
+	const raw = part.toolName ?? part.type.replace(/^tool-/, "");
+	return raw.replace(/^tool_[A-Za-z0-9]+_/, "");
+}
+
+/** Just enough markdown for chat answers: paragraphs, **bold**, `code`, and bullet lines. */
+function renderText(text: string) {
+	return text.split(/\n/).map((line, i) => {
+		const bullet = /^\s*[-*]\s+/.test(line);
+		const body = line.replace(/^\s*[-*]\s+/, "");
+		const pieces: Array<string | { b?: string; c?: string }> = [];
+		const re = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+		let last = 0;
+		for (const m of body.matchAll(re)) {
+			if (m.index! > last) pieces.push(body.slice(last, m.index));
+			pieces.push(m[1] !== undefined ? { b: m[1] } : { c: m[2] });
+			last = m.index! + m[0].length;
+		}
+		if (last < body.length) pieces.push(body.slice(last));
+		return (
+			<span key={i}>
+				{bullet ? "• " : ""}
+				{pieces.map((p, j) => (typeof p === "string" ? p : p.b !== undefined ? <strong key={j}>{p.b}</strong> : <code key={j}>{p.c}</code>))}
+				{i < text.split(/\n/).length - 1 ? "\n" : null}
+			</span>
+		);
+	});
+}
+
 function ToolPart({ part }: { part: Part }) {
-	const name = part.toolName ?? part.type.replace(/^tool-/, "");
+	const name = toolLabel(part);
 	const output = part.output as { content?: Array<{ type: string; data?: string; mimeType?: string }> } | undefined;
 	const image = output?.content?.find((c) => c.type === "image" && c.data);
 	const state = part.state ?? "";
@@ -192,7 +223,7 @@ function Chat({ info, onEnd, onClose }: { info: SessionInfo; onEnd: () => void; 
 					m.parts.map((part, i) =>
 						part.type === "text" && part.text ? (
 							<div key={`${m.id}-${i}`} className="ea-msg" data-role={m.role}>
-								{part.text}
+								{renderText(part.text)}
 							</div>
 						) : part.type.startsWith("tool-") || part.type === "dynamic-tool" ? (
 							<ToolPart key={`${m.id}-${i}`} part={part} />
