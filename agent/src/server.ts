@@ -134,6 +134,30 @@ export class SiteAgent extends Think<Env> {
 		return { ok: true };
 	}
 
+	/**
+	 * Operator smoke test: one turn without a browser client. Submits a user
+	 * message and waits for the run to finish (up to ~2 minutes), returning the
+	 * assistant's final text. Chat clients never use this path.
+	 */
+	async say(text: string): Promise<{ status: string; answer: string | null; steps: number }> {
+		const res = await this.submitMessages([{ id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text }] }]);
+		const terminal = new Set(["completed", "error", "aborted", "skipped", "unknown"]);
+		let status = "queued";
+		for (let i = 0; i < 60; i++) {
+			await new Promise((r) => setTimeout(r, 2000));
+			const s = await this.inspectSubmission(res.submissionId);
+			status = s?.status ?? "unknown";
+			if (terminal.has(status)) break;
+		}
+		const last = [...this.messages].reverse().find((m) => m.role === "assistant");
+		const parts = (last?.parts ?? []) as Array<{ type: string; text?: string }>;
+		return {
+			status,
+			answer: parts.filter((p) => p.type === "text" && p.text).map((p) => p.text).join("").trim() || null,
+			steps: parts.filter((p) => p.type.startsWith("tool-") || p.type === "dynamic-tool").length,
+		};
+	}
+
 	/** What the control plane may see: who the session is for and how its MCP servers are doing (no secrets). */
 	async status(): Promise<Record<string, unknown>> {
 		const c = this.config ?? ((await this.ctx.storage.get<SessionConfig>("session")) ?? null);
@@ -247,6 +271,13 @@ export default {
 		if (request.method === "GET" && ending) {
 			const agent = await getAgentByName(env.SiteAgent, ending[1]!);
 			return json(await agent.status());
+		}
+		const saying = url.pathname.match(/^\/session\/([A-Za-z0-9_-]{8,64})\/say$/);
+		if (request.method === "POST" && saying) {
+			const body = (await request.json().catch(() => null)) as { text?: unknown } | null;
+			if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "text required" }, 400);
+			const agent = await getAgentByName(env.SiteAgent, saying[1]!);
+			return json(await agent.say(body.text.slice(0, 4000)));
 		}
 		if (request.method === "DELETE" && ending) {
 			const sessionId = ending[1]!;

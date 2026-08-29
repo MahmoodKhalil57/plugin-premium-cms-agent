@@ -138,6 +138,7 @@ const plugin: SandboxedPlugin = {
 		 * which routes to call for a session.
 		 */
 		toolbar: {
+			permission: "content:edit_own",
 			handler: async (routeCtx, ctx) => {
 				const who = sessionOnly(routeCtx);
 				if (!who.ok) return { success: false, error: who.error };
@@ -162,6 +163,7 @@ const plugin: SandboxedPlugin = {
 		 * and nowhere else. Returns the ticket the browser connects with.
 		 */
 		session: {
+			permission: "content:edit_own",
 			handler: async (routeCtx, ctx) => {
 				const who = sessionOnly(routeCtx);
 				if (!who.ok) return { success: false, error: who.error };
@@ -208,6 +210,7 @@ const plugin: SandboxedPlugin = {
 
 		/** Close a session on the worker. The browser revokes the token itself (core, session-only). */
 		"session/end": {
+			permission: "content:edit_own",
 			handler: async (routeCtx, ctx) => {
 				const who = sessionOnly(routeCtx);
 				if (!who.ok) return { success: false, error: who.error };
@@ -223,6 +226,7 @@ const plugin: SandboxedPlugin = {
 		},
 
 		settings: {
+			permission: "content:edit_own",
 			handler: async (routeCtx, ctx) => {
 				const who = sessionOnly(routeCtx);
 				if (!who.ok) return { success: false, error: who.error };
@@ -247,6 +251,7 @@ const plugin: SandboxedPlugin = {
 		},
 
 		admin: {
+			permission: "content:edit_own",
 			handler: async (routeCtx, ctx) => {
 				const who = sessionOnly(routeCtx);
 				if (!who.ok) return { blocks: [{ type: "banner", variant: "alert", description: who.error }] };
