@@ -3,7 +3,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"build:client": "bun build client/index.tsx --outfile public/toolbar.js --target browser --minify --define process.env.NODE_ENV='\"production\"'",
+		"build:client": "bun build client/index.tsx --outfile public/toolbar.js --target browser --production",
 		"deploy": "bun run build:client && wrangler deploy",
 		"typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p client/tsconfig.json"
 	},
