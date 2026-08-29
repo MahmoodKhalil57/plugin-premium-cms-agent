@@ -150,17 +150,22 @@ async function putSkill(ctx: PluginContext, skill: Skill): Promise<void> {
 	await ctx.storage.skills!.put(skill.id, skill);
 }
 
-/** The site's roles for the picker — from core when the capability is bridged, else the built-in five. */
-async function siteRoles(ctx: PluginContext): Promise<Array<{ id: string; name: string; level: number }>> {
+/** The site's roles for the picker — from core when the capability is bridged, else the built-in five (and why). */
+async function siteRoles(ctx: PluginContext): Promise<{ roles: Array<{ id: string; name: string; level: number }>; source: "site" | "builtin"; reason?: string }> {
 	// `listRoles` arrived with core 0.35.41; typed structurally so the plugin also runs (with the built-in list) on older cores.
 	const users = ctx.users as { listRoles?: () => Promise<Array<{ id: string; name: string; level: number }>> } | undefined;
-	try {
-		const roles = await users?.listRoles?.();
-		if (roles?.length) return roles.map((r) => ({ id: r.id, name: r.name, level: r.level }));
-	} catch (error) {
-		ctx.log.warn("roles could not be listed; offering the built-in ones", error);
+	let reason = !users ? "the users capability is not bridged" : typeof users.listRoles !== "function" ? "this core has no listRoles (needs 0.35.41+)" : "";
+	if (!reason) {
+		try {
+			const roles = await users!.listRoles!();
+			if (roles?.length) return { roles: roles.map((r) => ({ id: r.id, name: r.name, level: r.level })), source: "site" };
+			reason = "the site returned no roles";
+		} catch (error) {
+			reason = String(error instanceof Error ? error.message : error);
+			ctx.log.warn("roles could not be listed; offering the built-in ones", error);
+		}
 	}
-	return BUILTIN_ROLES.map((r) => ({ id: r.id, name: r.name, level: r.level }));
+	return { roles: BUILTIN_ROLES.map((r) => ({ id: r.id, name: r.name, level: r.level })), source: "builtin", reason };
 }
 
 /** Validate and store a skill (new, or the given existing one). */
@@ -305,7 +310,8 @@ const plugin: SandboxedPlugin = {
 				const who = sessionOnly(routeCtx);
 				if (!who.ok) return { success: false, error: who.error };
 				const items = await listSkills(ctx);
-				return { success: true, items, roles: await siteRoles(ctx), mine: skillsFor(items, who.user.roleId).map((k) => k.name) };
+				const r = await siteRoles(ctx);
+				return { success: true, items, roles: r.roles, rolesSource: r.source, ...(r.reason ? { rolesReason: r.reason } : {}), mine: skillsFor(items, who.user.roleId).map((k) => k.name) };
 			},
 		},
 
@@ -514,7 +520,7 @@ async function skillsInteraction(ctx: PluginContext, user: Caller, i: SkillsInte
 
 async function buildSkillsPage(ctx: PluginContext, user: Caller, opts: { notice?: string; editing?: Skill | null } = {}) {
 	const skills = await listSkills(ctx);
-	const roles = await siteRoles(ctx);
+	const { roles, source, reason } = await siteRoles(ctx);
 	const roleName = (id: string) => roles.find((r) => r.id === id)?.name ?? id;
 	const manage = canManage(user);
 	const blocks: unknown[] = [{ type: "header", text: "Agent skills" }];
@@ -543,6 +549,9 @@ async function buildSkillsPage(ctx: PluginContext, user: Caller, opts: { notice?
 			updated: s.updatedAt,
 		})),
 	});
+	if (source === "builtin") {
+		blocks.push({ type: "context", text: `Role list: the built-in roles (the site's own roles could not be read${reason ? ` — ${reason}` : ""}).` });
+	}
 	if (!manage) {
 		blocks.push({ type: "context", text: "Admins add and edit skills here." });
 		return { blocks };

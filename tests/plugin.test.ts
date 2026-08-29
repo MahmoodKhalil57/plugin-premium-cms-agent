@@ -214,6 +214,7 @@ describe("skills", () => {
 		const mine = (await route("skills")({ input: {}, user: author }, ctx)) as { success: boolean; items: unknown[]; roles: Array<{ id: string }>; mine: string[] };
 		expect(mine.items).toHaveLength(4);
 		expect(mine.roles.map((x) => x.id)).toContain("role:copywriter");
+		expect((mine as { rolesSource: string }).rolesSource).toBe("site");
 		expect(mine.mine.sort()).toEqual(["house-style", "product-page-style"]);
 	});
 
@@ -246,8 +247,9 @@ describe("skills", () => {
 
 	it("offers the built-in roles when the site's roles cannot be listed", async () => {
 		const { ctx } = ctxWith({ settings, roles: "unavailable" });
-		const page = (await route("admin")({ input: { type: "page_load", page: "/skills" }, user: admin }, ctx)) as { blocks: Array<{ type: string; fields?: Array<{ action_id: string; options?: Array<{ value: string }> }> }> };
+		const page = (await route("admin")({ input: { type: "page_load", page: "/skills" }, user: admin }, ctx)) as { blocks: Array<{ type: string; text?: string; fields?: Array<{ action_id: string; options?: Array<{ value: string }> }> }> };
 		const rolesField = page.blocks.find((b) => b.type === "form")!.fields!.find((f) => f.action_id === "roles")!;
 		expect(rolesField.options!.map((o) => o.value)).toEqual(["role:admin", "role:editor", "role:author", "role:contributor", "role:subscriber"]);
+		expect(page.blocks.some((b) => b.type === "context" && /built-in roles/.test(b.text ?? ""))).toBe(true);
 	});
 });
