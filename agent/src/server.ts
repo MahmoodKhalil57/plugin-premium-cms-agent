@@ -133,6 +133,21 @@ export class SiteAgent extends Think<Env> {
 		this.config = null;
 		return { ok: true };
 	}
+
+	/** What the control plane may see: who the session is for and how its MCP servers are doing (no secrets). */
+	async status(): Promise<Record<string, unknown>> {
+		const c = this.config ?? ((await this.ctx.storage.get<SessionConfig>("session")) ?? null);
+		const servers = Object.entries(this.getMcpServers().servers ?? {}).map(([id, s]) => {
+			const server = s as { name?: string; state?: string; server_url?: string; tools?: unknown[] };
+			return { id, name: server.name, state: server.state, url: server.server_url, tools: Array.isArray(server.tools) ? server.tools.length : undefined };
+		});
+		const tools = (this.getMcpServers().tools ?? []) as Array<{ name?: string; serverId?: string }>;
+		return {
+			session: c ? { sessionId: c.sessionId, siteUrl: c.siteUrl, user: c.user, expiresAt: c.expiresAt, model: this.getModel() } : null,
+			servers,
+			tools: tools.map((t) => t.name),
+		};
+	}
 }
 
 function json(data: unknown, status = 200): Response {
@@ -229,6 +244,10 @@ export default {
 		}
 
 		const ending = url.pathname.match(/^\/session\/([A-Za-z0-9_-]{8,64})$/);
+		if (request.method === "GET" && ending) {
+			const agent = await getAgentByName(env.SiteAgent, ending[1]!);
+			return json(await agent.status());
+		}
 		if (request.method === "DELETE" && ending) {
 			const sessionId = ending[1]!;
 			await env.BrowserBridge.get(env.BrowserBridge.idFromName(sessionId)).fetch(
