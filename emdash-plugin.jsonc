@@ -14,13 +14,19 @@
 	// The plugin only talks to the agent worker; the assistant itself acts
 	// through the site's MCP endpoint with a short-lived token minted by the
 	// signed-in editor's browser, and through that browser.
-	"capabilities": ["network:request"],
+	// users:read lists the site's roles for the skills page and tells the
+	// plugin which role the chatting editor holds.
+	"capabilities": ["network:request", "users:read"],
 	"allowedHosts": ["*.workers.dev", "*.premium-cms.com"],
 	"storage": {
 		"sessions": { "indexes": ["userId", "status", "updatedAt"] },
+		"skills": { "indexes": ["enabled", "updatedAt"] },
 	},
 
 	"admin": {
-		"pages": [{ "path": "/agent", "label": "Site Agent", "icon": "message-circle" }],
+		"pages": [
+			{ "path": "/agent", "label": "Site Agent", "icon": "message-circle" },
+			{ "path": "/skills", "label": "Agent skills", "icon": "book-open" },
+		],
 	},
 }

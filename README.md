@@ -36,6 +36,22 @@ work to the GitHub agent through its MCP tools (`premium-github-agent__create_is
 etc.). The only things tokens cannot do are mint other tokens and call this
 plugin's routes, which are session-only.
 
+## Skills, per role
+
+Owners teach the assistant on the plugin's **Agent skills** page
+(`/_emdash/admin/plugins/premium-cms-agent/skills`): a skill is a name, a
+one-line description the model reads to decide when it applies, and markdown
+instructions — the same shape as a bundled Think skill. Each skill is assigned
+to roles (the site's roles, custom ones included; none = everyone) and can be
+disabled without deleting it. When an editor opens a chat, the plugin sends
+the enabled skills assigned to their role along with the session, and the
+worker exposes them to the model next to the bundled `site-assistant` skill
+(bounded: 30 skills, 24 KB each). Editors see the list; admins manage it
+(routes `skills`, `skills/save`, `skills/delete`; the page uses the same
+checks). The picker comes from `ctx.users.listRoles()` (core ≥ 0.35.41) and
+the match from `ctx.user.roleId`; on an older core the built-in five roles
+are offered.
+
 ## How it fits together
 
 ```

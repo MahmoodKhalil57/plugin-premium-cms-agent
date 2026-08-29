@@ -1,6 +1,6 @@
 {
 	"name": "premium-cms-plugin-premium-cms-agent",
-	"version": "0.1.2",
+	"version": "0.2.0",
 	"type": "module",
 	"description": "Site assistant in the EmDash toolbar: a Think agent with the site MCP and a browser bridge, session-only.",
 	"main": "dist/index.mjs",

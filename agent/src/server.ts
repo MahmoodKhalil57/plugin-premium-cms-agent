@@ -44,8 +44,47 @@ export interface SessionConfig {
 	pageUrl: string;
 	model?: string;
 	reasoning?: "low" | "medium" | "high";
+	/** Skills the site attaches to this chat (chosen by the plugin for the editor's role). */
+	skills?: SiteSkill[];
 	/** This worker's origin, for the bridge MCP URL. */
 	origin: string;
+}
+
+/** A skill authored on the site's admin page: the same shape as a bundled skill. */
+export interface SiteSkill {
+	name: string;
+	description: string;
+	body: string;
+}
+
+const MAX_SITE_SKILLS = 30;
+const MAX_SKILL_BODY = 24_000;
+const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** Keep only well-formed skills; names must be slugs and unique (the bundled skill's name is reserved). */
+export function siteSkills(raw: unknown): SiteSkill[] {
+	if (!Array.isArray(raw)) return [];
+	const out: SiteSkill[] = [];
+	const seen = new Set<string>([SITE_ASSISTANT_SKILL.name]);
+	for (const item of raw) {
+		if (out.length >= MAX_SITE_SKILLS || !item || typeof item !== "object") continue;
+		const s = item as { name?: unknown; description?: unknown; body?: unknown };
+		const name = typeof s.name === "string" ? s.name.trim().toLowerCase() : "";
+		const description = typeof s.description === "string" ? s.description.trim() : "";
+		const body = typeof s.body === "string" ? s.body.trim() : "";
+		if (!SKILL_NAME.test(name) || seen.has(name) || !description || !body) continue;
+		seen.add(name);
+		out.push({ name, description: description.slice(0, 500), body: body.slice(0, MAX_SKILL_BODY) });
+	}
+	return out;
+}
+
+/** A short stable fingerprint of the skill set, so Think can tell one set from another. */
+function skillsFingerprint(list: SiteSkill[]): string {
+	let h = 5381;
+	const text = JSON.stringify(list);
+	for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+	return `site-skills@${(h >>> 0).toString(36)}-${list.length}`;
 }
 
 const DEFAULT_MODEL = "@cf/zai-org/glm-5.3-flash";
@@ -74,12 +113,22 @@ export class SiteAgent extends Think<Env> {
 	}
 
 	async getSkills() {
+		const own = this.config?.skills ?? ((await this.ctx.storage.get<SessionConfig>("session"))?.skills ?? []);
 		return [
 			skills.fromManifest({
 				id: "premium-cms-agent",
 				fingerprint: "site-assistant@1",
 				skills: [SITE_ASSISTANT_SKILL],
 			}),
+			...(own.length
+				? [
+						skills.fromManifest({
+							id: "site-skills",
+							fingerprint: skillsFingerprint(own),
+							skills: own,
+						}),
+					]
+				: []),
 		];
 	}
 
@@ -260,6 +309,7 @@ export default {
 				pageUrl: typeof body.pageUrl === "string" ? body.pageUrl : "",
 				model: typeof body.model === "string" && body.model ? body.model : inherited?.model,
 				reasoning: body.reasoning ?? inherited?.reasoning,
+				skills: siteSkills(body.skills),
 				origin: url.origin,
 			};
 			const bridgeInit = await env.BrowserBridge.get(env.BrowserBridge.idFromName(sessionId)).fetch(
