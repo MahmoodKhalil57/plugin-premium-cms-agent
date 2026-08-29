@@ -51,9 +51,6 @@ export interface SessionConfig {
 const DEFAULT_MODEL = "@cf/zai-org/glm-5.3-flash";
 const SESSION_ID = /^[A-Za-z0-9_-]{8,64}$/;
 
-/** Site tools the toolbar assistant never gets: destruction and administration stay in the admin. */
-const FORBIDDEN = /permanent|schema_(create|update|delete|remove)|settings_(set|update|write|save)|token|user_(create|update|delete|invite)|role|polic|webhook|backup|restore|migrat/i;
-
 export class SiteAgent extends Think<Env> {
 	workspaceBash = false;
 	fetchTools = false as const;
@@ -73,7 +70,7 @@ export class SiteAgent extends Think<Env> {
 	}
 
 	getSystemPrompt() {
-		return "You are the site assistant of an EmDash site, chatting with a signed-in editor from the site's toolbar. Activate the site-assistant skill and follow it. You act only through the connected MCP tools; you cannot run code anywhere else.";
+		return "You are the site assistant of an EmDash site, chatting with a signed-in editor from the site's toolbar. Activate the site-assistant skill and follow it. You act through the connected MCP tools as that editor — content, media, schema, settings and the GitHub coding agent are all reachable that way; you cannot run code anywhere else.";
 	}
 
 	async getSkills() {
@@ -88,16 +85,6 @@ export class SiteAgent extends Think<Env> {
 
 	getSkillScriptRunner() {
 		return null;
-	}
-
-	beforeToolCall(ctx: { toolName: string }) {
-		if (FORBIDDEN.test(ctx.toolName)) {
-			return {
-				action: "block" as const,
-				reason: `"${ctx.toolName}" is not available from the toolbar assistant — use the admin for that.`,
-			};
-		}
-		return undefined;
 	}
 
 	/** Bind this object to a session and connect both MCP servers. Idempotent. */
