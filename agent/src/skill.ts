@@ -41,6 +41,17 @@ do afterwards, and acceptance criteria. Follow up with
 shows what is already in flight. If those tools are missing, the GitHub agent
 plugin is not installed or its MCP tools are not enabled on this site — say so.
 
+**Several related frontend changes** (they depend on each other, or touch the
+same files): do not open them one by one — use
+\`premium-github-agent__create_stack\` with the issues in dependency order,
+bottom first (foundation → things built on it → polish). Each layer becomes a
+pull request on top of the previous one, so nothing conflicts and nothing waits
+for a merge; the platform builds every layer and merges the stack bottom-up.
+Keep each layer small and independently reviewable (one concern per layer, 2–5
+layers). To add one more change on top of an issue already in flight, use
+\`create_issue\` with \`on\` set to that issue's number. Independent changes in
+unrelated files can still be separate \`create_issue\` calls.
+
 ## Workflow
 1. Orient first: \`browser_info\`, then \`browser_editable_fields\`. The fields tell
    you which entries (collection, id, field) render on this page — that is the
