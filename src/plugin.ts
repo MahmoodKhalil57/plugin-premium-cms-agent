@@ -151,21 +151,21 @@ async function putSkill(ctx: PluginContext, skill: Skill): Promise<void> {
 }
 
 /** The site's roles for the picker — from core when the capability is bridged, else the built-in five (and why). */
-async function siteRoles(ctx: PluginContext): Promise<{ roles: Array<{ id: string; name: string; level: number }>; source: "site" | "builtin"; reason?: string }> {
+async function siteRoles(ctx: PluginContext): Promise<{ roles: Array<{ id: string; name: string; slug: string; level: number }>; source: "site" | "builtin"; reason?: string }> {
 	// `listRoles` arrived with core 0.35.41; typed structurally so the plugin also runs (with the built-in list) on older cores.
-	const users = ctx.users as { listRoles?: () => Promise<Array<{ id: string; name: string; level: number }>> } | undefined;
+	const users = ctx.users as { listRoles?: () => Promise<Array<{ id: string; name: string; slug?: string; level: number }>> } | undefined;
 	let reason = !users ? "the users capability is not bridged" : typeof users.listRoles !== "function" ? "this core has no listRoles (needs 0.35.41+)" : "";
 	if (!reason) {
 		try {
 			const roles = await users!.listRoles!();
-			if (roles?.length) return { roles: roles.map((r) => ({ id: r.id, name: r.name, level: r.level })), source: "site" };
+			if (roles?.length) return { roles: roles.map((r) => ({ id: r.id, name: r.name, slug: r.slug ?? r.id.replace(/^role:/, ""), level: r.level })), source: "site" };
 			reason = "the site returned no roles";
 		} catch (error) {
 			reason = String(error instanceof Error ? error.message : error);
 			ctx.log.warn("roles could not be listed; offering the built-in ones", error);
 		}
 	}
-	return { roles: BUILTIN_ROLES.map((r) => ({ id: r.id, name: r.name, level: r.level })), source: "builtin", reason };
+	return { roles: BUILTIN_ROLES.map((r) => ({ id: r.id, name: r.name, slug: r.id.replace(/^role:/, ""), level: r.level })), source: "builtin", reason };
 }
 
 /** Validate and store a skill (new, or the given existing one). */
@@ -606,7 +606,7 @@ async function buildSkillsPage(ctx: PluginContext, user: Caller, opts: { notice?
 				type: "checkbox",
 				action_id: "roles",
 				label: "Roles that get this skill (none = everyone)",
-				options: roles.map((r) => ({ label: `${r.name} (${r.id})`, value: r.id })),
+				options: roles.map((r) => ({ label: `${r.name} (${r.slug})`, value: r.id })),
 				initial_value: editing?.roles ?? [],
 			},
 			{ type: "toggle", action_id: "enabled", label: "Enabled", initial_value: editing?.enabled ?? true },
