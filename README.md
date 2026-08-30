@@ -13,9 +13,9 @@ editor — and explain what it did.
   bundled skill (`site-assistant`) and two MCP servers.
 - **Your access, briefly.** The panel mints a short-lived personal token for
   the signed-in editor (`POST /_emdash/api/auth/session-tokens`, session-only,
-  capped at the editor's own policies) and hands it to the worker for the
-  site MCP connection. The browser only ever holds a session ticket. Ending
-  the session revokes the token.
+  capped at the editor's own policies) and hands it to the instance's agent
+  runtime for the site MCP connection. The browser only ever holds a session
+  ticket. Ending the session revokes the token.
 
 ## Chats and history
 
@@ -55,13 +55,13 @@ are offered.
 ## How it fits together
 
 ```
-toolbar "Agent" button ──loads──▶ worker/toolbar.js (chat panel + browser bridge)
-        │                               │
-        │ session token (core)          │ WebSocket (ticket)
-        ▼                               ▼
-plugin `session` route ──AGENT_KEY──▶ worker POST /session ─▶ SiteAgent (Think)
-                                                               ├─ MCP "site":    <site>/_emdash/api/mcp  (Bearer = editor's session token)
-                                                               └─ MCP "browser": worker/browser/<id>/mcp (tools run in the editor's tab)
+toolbar "Agent" button ──loads──▶ <site>/_emdash/agents/toolbar.js (chat panel + browser bridge)
+        │                                     │
+        │ session token (core)                │ WebSocket (ticket)
+        ▼                                     ▼
+plugin `session` route ──ctx.agents.session──▶ PluginAgent (Think, a Durable Object of the instance)
+                                                ├─ MCP "site":    <site>/_emdash/api/mcp  (Bearer = editor's session token)
+                                                └─ MCP "browser": <site>/_emdash/agents/browser/<id>/mcp (tools run in the editor's tab)
 ```
 
 Core provides two small pieces: `GET /_emdash/api/toolbar/extensions` (the
@@ -80,17 +80,20 @@ tools happen to execute in the connected tab.
 
 ## Settings
 
-Agent worker URL, agent key (`AGENT_KEY` on the worker), model, reasoning
-effort, session length (1–24 h). The admin page lists recent sessions.
+Model, reasoning effort, session length (1–24 h). The admin page lists recent
+sessions.
 
-## The worker
+## The runtime
 
-`agent/` is a standalone Worker: `bun install && bun run deploy` (builds
-`public/toolbar.js` with bun, then `wrangler deploy`), then
-`wrangler secret put AGENT_KEY` with the key you paste into the plugin
-settings. Needs Workers AI (Workers Paid). The platform runs one shared
-instance at `https://premium-cms-agent.premiumcms.workers.dev`.
+There is nothing to deploy: the platform's instance bundle ships the agent
+runtime (`@premium-cms/cloudflare/agents`) and the plugin uses it through
+`ctx.agents` (capability `agents:run`). `ctx.agents.session(...)` opens a
+Think session on a `PluginAgent` Durable Object of the instance (one per chat,
+named `premium-cms-agent:<session id>`; further chats inherit the token from
+their parent session), returns the ticket the panel connects with, and
+`ctx.agents.endSession(...)` closes it and revokes the token.
 
-Routes: `POST /session` and `DELETE /session/:id` (AGENT_KEY),
-`/agents/site-agent/:id` (chat, `?ticket=`), `/browser/:id/ws` (the tab,
-`?ticket=`), `POST /browser/:id/mcp` (the agent, Bearer ticket), `/toolbar.js`.
+Instance routes: `/_emdash/agents/toolbar.js` (the panel), `/_emdash/agents/chat/plugin-agent/<name>?ticket=`
+(the chat WebSocket), `/_emdash/agents/browser/<name>/ws` (the tab, `?ticket=`)
+and `POST /_emdash/agents/browser/<name>/mcp` (the agent, Bearer ticket). All
+of them are served by the site's own Worker on Workers AI.
