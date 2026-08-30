@@ -9,11 +9,12 @@
  *             and asks this plugin's `session` route to open a chat session
  *             on the agent worker. The worker keeps the token; the browser
  *             only ever holds a session ticket.
- *   agent     A Cloudflare Worker running a Think agent with two MCP
- *             servers: the site's own MCP endpoint (acting as the editor,
- *             within their permissions) and a browser bridge — an MCP server
- *             whose tools run inside the editor's tab (screenshots, DOM and
- *             style snapshots, console, clicks, evaluate).
+ *   agent     The instance's own Think agent (`ctx.agents`, hosted by the
+ *             site's instance) with two MCP servers: the site's own MCP
+ *             endpoint (acting as the editor, within their permissions) and a
+ *             browser bridge — an MCP server whose tools run inside the
+ *             editor's tab (screenshots, DOM and style snapshots, console,
+ *             clicks, evaluate). Nothing runs outside the instance.
  *   scope     Every route here is session-only: a request authenticated by an
  *             API token is refused, and the plugin exposes no MCP tools, so
  *             the assistant cannot be reached from another agent.
@@ -29,6 +30,7 @@
 import type { PluginContext, SandboxedPlugin } from "@premium-cms/emdash/plugin";
 
 import { DEFAULTS, readSettings, saveSettings, type Settings } from "./settings.js";
+import { SITE_ASSISTANT_SKILL } from "./skill.js";
 import { BUILTIN_ROLES, isSkill, MAX_SKILLS, parseSkill, skillsFor, type Skill } from "./skills.js";
 
 const PLUGIN_ID = "premium-cms-agent";
@@ -85,8 +87,22 @@ function sessionOnly(routeCtx: RouteCtx): { ok: true; user: Caller } | { ok: fal
 async function ready(ctx: PluginContext): Promise<{ ok: true; settings: Settings } | { ok: false; error: string }> {
 	const settings = await readSettings(ctx);
 	if (!settings.enabled) return { ok: false, error: "The site agent is turned off in its settings." };
-	if (!settings.agentKey) return { ok: false, error: "The agent key is not set in the plugin settings." };
+	if (!agentsOf(ctx)) return { ok: false, error: "This instance does not host the agent runtime yet." };
 	return { ok: true, settings };
+}
+
+/** The instance's agent runtime, as the plugin context exposes it (capability agents:run). */
+interface AgentsLike {
+	session(spec: Record<string, unknown>): Promise<{ agent: string; ticket: string; expiresAt: string }>;
+	endSession(id: string): Promise<void>;
+}
+
+function agentsOf(ctx: PluginContext): AgentsLike | null {
+	return (ctx as { agents?: AgentsLike }).agents ?? null;
+}
+
+function newSessionId(): string {
+	return crypto.randomUUID().replace(/-/g, "");
 }
 
 interface Session {
@@ -103,31 +119,6 @@ interface Session {
 
 function isSession(v: unknown): v is Session {
 	return isRecord(v) && typeof v.id === "string" && typeof v.userId === "string";
-}
-
-async function worker(
-	ctx: PluginContext,
-	settings: Settings,
-	method: "POST" | "DELETE",
-	path: string,
-	body?: unknown,
-): Promise<{ ok: boolean; status: number; json: Record<string, unknown> }> {
-	const res = await ctx.http!.fetch(`${settings.agentUrl}${path}`, {
-		method,
-		headers: {
-			Authorization: `Bearer ${settings.agentKey}`,
-			"Content-Type": "application/json",
-			"User-Agent": "premium-cms-agent-plugin/1.0",
-		},
-		body: body ? JSON.stringify(body) : undefined,
-	});
-	let json: Record<string, unknown> = {};
-	try {
-		json = (await res.json()) as Record<string, unknown>;
-	} catch {
-		json = {};
-	}
-	return { ok: res.ok, status: res.status, json };
 }
 
 // ── Skills ───────────────────────────────────────────────────────────────
@@ -192,7 +183,6 @@ const plugin: SandboxedPlugin = {
 	hooks: {
 		"plugin:install": async (_event, ctx) => {
 			for (const [k, v] of Object.entries(DEFAULTS)) {
-				if (k === "agentKey") continue;
 				if ((await ctx.kv.get(`settings:${k}`)) === null) await ctx.kv.set(`settings:${k}`, v);
 			}
 			ctx.log.info("Site agent installed");
@@ -214,7 +204,8 @@ const plugin: SandboxedPlugin = {
 				if (!r.ok) return { success: false, error: r.error };
 				return {
 					label: "Agent",
-					script: `${r.settings.agentUrl}/toolbar.js`,
+					// Served by the instance itself (the runtime's public endpoint).
+					script: `${ctx.site.url.replace(/\/+$/, "")}/_emdash/agents/toolbar.js`,
 					config: {
 						session: SESSION_ROUTE,
 						end: END_ROUTE,
@@ -257,21 +248,38 @@ const plugin: SandboxedPlugin = {
 					return { success: false, error: "A session token (token, tokenId, expiresAt) is required." };
 				}
 				const skills = skillsFor(await listSkills(ctx), user.roleId);
-				const res = await worker(ctx, r.settings, "POST", "/session", {
-					siteUrl: ctx.site.url,
-					siteName: ctx.site.name,
-					user: { id: user.id, name: user.name, email: user.email, role: user.role },
-					...(parentId ? { parent: parentId } : { token, tokenId, expiresAt }),
-					pageUrl,
-					model: r.settings.model,
-					reasoning: r.settings.reasoning,
-					skills,
-				});
-				if (!res.ok || typeof res.json.sessionId !== "string" || typeof res.json.ticket !== "string") {
-					return { success: false, error: `agent ${res.status}: ${String(res.json.error ?? "could not open a session")}` };
+				const agents = agentsOf(ctx)!;
+				const sessionId = newSessionId();
+				const siteUrl = ctx.site.url.replace(/\/+$/, "");
+				let opened: { agent: string; ticket: string; expiresAt: string };
+				try {
+					// The editor's token lives on the runtime only (`{{secret:token}}` is
+					// expanded there); child chats inherit it from their parent session.
+					opened = await agents.session({
+						id: sessionId,
+						...(parentId ? { parent: parentId } : { secrets: { token } }),
+						model: r.settings.model,
+						reasoning: r.settings.reasoning,
+						systemPrompt:
+							"You are the site assistant of an EmDash site, chatting with a signed-in editor from the site's toolbar. Activate the site-assistant skill and follow it. You act through the connected MCP tools as that editor — content, media, schema, settings and the GitHub coding agent are all reachable that way; you cannot run code anywhere else.",
+						skills: [SITE_ASSISTANT_SKILL, ...skills],
+						mcp: [
+							{
+								name: "site",
+								url: `${siteUrl}/_emdash/api/mcp`,
+								headers: { Authorization: "Bearer {{secret:token}}", "X-EmDash-Request": "1" },
+							},
+						],
+						browser: true,
+						user: { id: user.id, name: user.name, email: user.email, role: user.role },
+						expiresAt,
+						maxSteps: 60,
+					});
+				} catch (error) {
+					return { success: false, error: `agent: ${String(error instanceof Error ? error.message : error)}` };
 				}
 				const session: Session = {
-					id: res.json.sessionId,
+					id: sessionId,
 					userId: user.id,
 					userName: user.name || user.email,
 					tokenId,
@@ -282,11 +290,11 @@ const plugin: SandboxedPlugin = {
 					updatedAt: now(),
 				};
 				await ctx.storage.sessions!.put(session.id, session);
-				return { success: true, sessionId: session.id, ticket: res.json.ticket, host: r.settings.agentUrl, expiresAt, skills: skills.map((k) => k.name) };
+				return { success: true, sessionId: session.id, agent: opened.agent, ticket: opened.ticket, host: siteUrl, expiresAt, skills: skills.map((k) => k.name) };
 			},
 		},
 
-		/** Close a session on the worker. The browser revokes the token itself (core, session-only). */
+		/** Close a session on the runtime. The browser revokes the token itself (core, session-only). */
 		"session/end": {
 			permission: "content:edit_own",
 			handler: async (routeCtx, ctx) => {
@@ -296,8 +304,7 @@ const plugin: SandboxedPlugin = {
 				const id = typeof input.sessionId === "string" ? input.sessionId : "";
 				const row = id ? await ctx.storage.sessions!.get(id) : null;
 				if (!isSession(row) || row.userId !== who.user.id) return { success: false, error: "Unknown session." };
-				const settings = await readSettings(ctx);
-				if (settings.agentKey) await worker(ctx, settings, "DELETE", `/session/${encodeURIComponent(id)}`).catch(() => undefined);
+				await agentsOf(ctx)?.endSession(id).catch(() => undefined);
 				await ctx.storage.sessions!.put(id, { ...row, status: "closed", updatedAt: now() });
 				return { success: true, tokenId: row.tokenId };
 			},
@@ -349,8 +356,7 @@ const plugin: SandboxedPlugin = {
 			handler: async (routeCtx, ctx) => {
 				const who = sessionOnly(routeCtx);
 				if (!who.ok) return { success: false, error: who.error };
-				const s = await readSettings(ctx);
-				return { success: true, settings: { ...s, agentKey: s.agentKey ? "set" : "" } };
+				return { success: true, settings: await readSettings(ctx) };
 			},
 		},
 
@@ -364,8 +370,7 @@ const plugin: SandboxedPlugin = {
 				} catch (error) {
 					return { success: false, error: String(error instanceof Error ? error.message : error) };
 				}
-				const s = await readSettings(ctx);
-				return { success: true, settings: { ...s, agentKey: s.agentKey ? "set" : "" } };
+				return { success: true, settings: await readSettings(ctx) };
 			},
 		},
 
@@ -407,16 +412,8 @@ async function buildPage(ctx: PluginContext, notice?: string) {
 	if (notice) blocks.push({ type: "banner", description: notice });
 	blocks.push({
 		type: "context",
-		text: "Editors open the assistant from the EmDash toolbar on the site (the Agent button). It chats through a Cloudflare Worker that reaches the site's MCP endpoint as the editor and the editor's own browser. It is not reachable from API tokens or other MCP clients. Skills — instructions the assistant follows for a given role — are managed on the Agent skills page.",
+		text: "Editors open the assistant from the EmDash toolbar on the site (the Agent button). It runs inside this site's own instance and reaches the site's MCP endpoint as the editor and the editor's own browser. It is not reachable from API tokens or other MCP clients. Skills — instructions the assistant follows for a given role — are managed on the Agent skills page.",
 	});
-	if (!settings.agentKey) {
-		blocks.push({
-			type: "banner",
-			variant: "alert",
-			title: "Agent key missing",
-			description: "Paste the agent worker's key below. The toolbar shows no Agent button until it is set.",
-		});
-	}
 
 	const sessions = (await ctx.storage.sessions!.query({ orderBy: { updatedAt: "desc" }, limit: 30 })).items
 		.map((i) => i.data)
@@ -442,8 +439,6 @@ async function buildPage(ctx: PluginContext, notice?: string) {
 		block_id: "settings",
 		fields: [
 			{ type: "toggle", action_id: "enabled", label: "Offer the assistant in the toolbar", initial_value: settings.enabled },
-			{ type: "text_input", action_id: "agentUrl", label: "Agent worker URL", initial_value: settings.agentUrl },
-			{ type: "secret_input", action_id: "agentKey", label: settings.agentKey ? "Agent key (set — leave blank to keep)" : "Agent key" },
 			{ type: "text_input", action_id: "model", label: "Model", initial_value: settings.model },
 			{
 				type: "select",

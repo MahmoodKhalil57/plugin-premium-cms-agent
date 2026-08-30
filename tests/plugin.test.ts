@@ -17,6 +17,9 @@ function ctxWith(opts: { settings?: Record<string, unknown>; fetch?: (url: strin
 	const sessions = new Map<string, Record<string, unknown>>();
 	const skills = new Map<string, Record<string, unknown>>();
 	const calls: Array<{ url: string; init?: RequestInit }> = [];
+	// The instance's agent runtime as the plugin sees it: sessions opened (their specs) and ended.
+	const specs: Array<Record<string, unknown>> = [];
+	const ended: string[] = [];
 	const ctx = {
 		kv: {
 			get: async (k: string) => kv.get(k) ?? null,
@@ -54,11 +57,18 @@ function ctxWith(opts: { settings?: Record<string, unknown>; fetch?: (url: strin
 			},
 		},
 		log: { debug() {}, info() {}, warn() {}, error() {} },
+		agents: {
+			session: async (spec: Record<string, unknown>) => {
+				specs.push(spec);
+				return { agent: `premium-cms-agent:${String(spec.id)}`, ticket: `t${specs.length}`, expiresAt: String(spec.expiresAt ?? "") };
+			},
+			endSession: async (id: string) => void ended.push(id),
+		},
 	};
-	return { ctx, sessions, skills, calls };
+	return { ctx, sessions, skills, calls, specs, ended };
 }
 
-const settings = { agentKey: "k", agentUrl: "https://agent.example", enabled: true, sessionHours: 2 };
+const settings = { enabled: true, sessionHours: 2 };
 type Caller = { id: string; email: string; name: string; role: number; createdAt: string; tokenAuth?: boolean };
 const author: Caller & { roleId?: string | null } = { id: "u1", email: "a@example.com", name: "Ann", role: 30, roleId: "role:copywriter", createdAt: "2026-01-01T00:00:00Z" };
 const admin: Caller & { roleId?: string | null } = { id: "u9", email: "o@example.com", name: "Omar", role: 50, roleId: "role:admin", createdAt: "2026-01-01T00:00:00Z" };
@@ -90,7 +100,7 @@ describe("toolbar", () => {
 		const r = (await route("toolbar")({ input: {}, user: author }, ctx)) as { label: string; script: string; config: Record<string, unknown> };
 		expect(r).toEqual({
 			label: "Agent",
-			script: "https://agent.example/toolbar.js",
+			script: "https://site.example/_emdash/agents/toolbar.js",
 			config: {
 				session: "/_emdash/api/plugins/premium-cms-agent/session",
 				end: "/_emdash/api/plugins/premium-cms-agent/session/end",
@@ -100,64 +110,67 @@ describe("toolbar", () => {
 		});
 	});
 
-	it("offers nothing while the key is missing or the plugin is off", async () => {
+	it("offers nothing while the plugin is off or the instance has no runtime", async () => {
 		const off = ctxWith({ settings: { ...settings, enabled: false } });
-		expect(((await route("toolbar")({ input: {}, user: author }, off.ctx)) as { success: boolean }).success).toBe(false);
-		const noKey = ctxWith({ settings: { ...settings, agentKey: "" } });
-		expect(((await route("toolbar")({ input: {}, user: author }, noKey.ctx)) as { success: boolean }).success).toBe(false);
+		const r1 = (await route("toolbar")({ input: {}, user: author }, off.ctx)) as { success?: boolean; label?: string };
+		expect(r1.success).toBe(false);
+		expect(r1.label).toBeUndefined();
+		const bare = ctxWith({ settings });
+		delete (bare.ctx as { agents?: unknown }).agents;
+		const r2 = (await route("toolbar")({ input: {}, user: author }, bare.ctx)) as { success?: boolean; error?: string };
+		expect(r2.success).toBe(false);
+		expect(r2.error).toMatch(/runtime/);
 	});
 });
 
 describe("session", () => {
-	it("hands the editor's token to the worker and returns only the ticket", async () => {
-		const { ctx, sessions, calls } = ctxWith({
-			settings,
-			fetch: async (url) => (url.endsWith("/session") ? Response.json({ sessionId: "s1", ticket: "t1", expiresAt: token.expiresAt }) : Response.json({})),
-		});
+	it("hands the editor's token to the instance's runtime as a secret and returns only the ticket", async () => {
+		const { ctx, sessions, specs } = ctxWith({ settings });
 		const r = (await route("session")({ input: token, user: author }, ctx)) as Record<string, unknown>;
-		expect(r).toEqual({ success: true, sessionId: "s1", ticket: "t1", host: "https://agent.example", expiresAt: token.expiresAt, skills: [] });
-		const sent = JSON.parse(String(calls[0]?.init?.body));
-		expect(calls[0]?.url).toBe("https://agent.example/session");
-		expect(sent).toMatchObject({ siteUrl: "https://site.example", token: token.token, tokenId: "tok1", user: { id: "u1", role: 30 } });
-		expect(sessions.get("s1")).toMatchObject({ userId: "u1", tokenId: "tok1", status: "open", pageUrl: token.pageUrl });
+		expect(r).toMatchObject({ success: true, ticket: "t1", host: "https://site.example", expiresAt: token.expiresAt, skills: [] });
+		const id = String(r.sessionId);
+		expect(r.agent).toBe(`premium-cms-agent:${id}`);
+		expect(JSON.stringify(r)).not.toContain(token.token);
+		expect(specs[0]).toMatchObject({
+			id,
+			secrets: { token: token.token },
+			browser: true,
+			user: { id: "u1", role: 30 },
+			expiresAt: token.expiresAt,
+			mcp: [{ name: "site", url: "https://site.example/_emdash/api/mcp", headers: { Authorization: "Bearer {{secret:token}}" } }],
+		});
+		expect((specs[0].skills as Array<{ name: string }>).map((s) => s.name)).toEqual(["site-assistant"]);
+		expect(sessions.get(id)).toMatchObject({ userId: "u1", tokenId: "tok1", status: "open", pageUrl: token.pageUrl });
 	});
 
 	it("opens a child chat from a parent chat without a token, and refuses someone else's parent", async () => {
-		let n = 0;
-		const { ctx, sessions, calls } = ctxWith({
-			settings,
-			fetch: async (url) => (url.endsWith("/session") ? Response.json({ sessionId: `s${++n}`, ticket: `t${n}`, expiresAt: token.expiresAt }) : Response.json({})),
-		});
-		await route("session")({ input: token, user: author }, ctx);
-		const child = (await route("session")({ input: { parent: "s1", pageUrl: "https://site.example/pricing" }, user: author }, ctx)) as Record<string, unknown>;
-		expect(child).toMatchObject({ success: true, sessionId: "s2", ticket: "t2" });
-		const sent = JSON.parse(String(calls[1]?.init?.body));
-		expect(sent.parent).toBe("s1");
-		expect(sent.token).toBeUndefined();
-		expect(sessions.get("s2")).toMatchObject({ userId: "u1", tokenId: "tok1", status: "open" });
-		const other = (await route("session")({ input: { parent: "s1" }, user: { ...author, id: "u2" } }, ctx)) as { success: boolean };
+		const { ctx, sessions, specs } = ctxWith({ settings });
+		const first = (await route("session")({ input: token, user: author }, ctx)) as { sessionId: string };
+		const child = (await route("session")({ input: { parent: first.sessionId, pageUrl: "https://site.example/pricing" }, user: author }, ctx)) as Record<string, unknown>;
+		expect(child).toMatchObject({ success: true, ticket: "t2" });
+		expect(specs[1]).toMatchObject({ parent: first.sessionId });
+		expect(specs[1].secrets).toBeUndefined();
+		expect(sessions.get(String(child.sessionId))).toMatchObject({ userId: "u1", tokenId: "tok1", status: "open" });
+		const other = (await route("session")({ input: { parent: first.sessionId }, user: { ...author, id: "u2" } }, ctx)) as { success: boolean };
 		expect(other.success).toBe(false);
 	});
 
-	it("rejects malformed tokens before talking to the worker", async () => {
-		const { ctx, calls } = ctxWith({ settings });
+	it("rejects malformed tokens before opening anything on the runtime", async () => {
+		const { ctx, specs } = ctxWith({ settings });
 		const r = (await route("session")({ input: { ...token, token: "not-a-token" }, user: author }, ctx)) as { success: boolean };
 		expect(r.success).toBe(false);
-		expect(calls).toEqual([]);
+		expect(specs).toEqual([]);
 	});
 
 	it("ends only the caller's own session and reports the token to revoke", async () => {
-		const { ctx, sessions, calls } = ctxWith({
-			settings,
-			fetch: async (url) => (url.endsWith("/session") ? Response.json({ sessionId: "s1", ticket: "t1" }) : Response.json({ ok: true })),
-		});
-		await route("session")({ input: token, user: author }, ctx);
-		const other = (await route("session/end")({ input: { sessionId: "s1" }, user: { ...author, id: "u2" } }, ctx)) as { success: boolean };
+		const { ctx, sessions, ended } = ctxWith({ settings });
+		const first = (await route("session")({ input: token, user: author }, ctx)) as { sessionId: string };
+		const other = (await route("session/end")({ input: { sessionId: first.sessionId }, user: { ...author, id: "u2" } }, ctx)) as { success: boolean };
 		expect(other.success).toBe(false);
-		const mine = (await route("session/end")({ input: { sessionId: "s1" }, user: author }, ctx)) as { success: boolean; tokenId: string };
+		const mine = (await route("session/end")({ input: { sessionId: first.sessionId }, user: author }, ctx)) as { success: boolean; tokenId: string };
 		expect(mine).toEqual({ success: true, tokenId: "tok1" });
-		expect(sessions.get("s1")).toMatchObject({ status: "closed" });
-		expect(calls.some((c) => c.url === "https://agent.example/session/s1" && c.init?.method === "DELETE")).toBe(true);
+		expect(sessions.get(first.sessionId)).toMatchObject({ status: "closed" });
+		expect(ended).toEqual([first.sessionId]);
 	});
 });
 
@@ -200,7 +213,7 @@ describe("skills", () => {
 	});
 
 	it("a chat carries the enabled skills assigned to the editor's role, plus the ones for everyone", async () => {
-		const { ctx, calls } = ctxWith({ settings, fetch: async () => Response.json({ sessionId: "s1", ticket: "t1", expiresAt: token.expiresAt }) });
+		const { ctx, specs } = ctxWith({ settings });
 		await route("skills/save")({ input: skill(), user: admin }, ctx);
 		await route("skills/save")({ input: skill({ name: "House style", description: "Always.", roles: [] }), user: admin }, ctx);
 		await route("skills/save")({ input: skill({ name: "Admin only", description: "Admins.", roles: ["role:admin"] }), user: admin }, ctx);
@@ -208,13 +221,13 @@ describe("skills", () => {
 		const r = (await route("session")({ input: token, user: author }, ctx)) as { success: boolean; skills: string[] };
 		expect(r.success).toBe(true);
 		expect(r.skills.sort()).toEqual(["house-style", "product-page-style"]);
-		const body = JSON.parse(String(calls.find((c) => c.url.endsWith("/session"))?.init?.body));
-		expect(body.skills.map((s: { name: string }) => s.name).sort()).toEqual(["house-style", "product-page-style"]);
-		expect(body.skills[0]).toMatchObject({ description: expect.any(String), body: expect.any(String) });
+		const sent = (specs[0].skills as Array<{ name: string; description: string; body: string }>).filter((s) => s.name !== "site-assistant");
+		expect(sent.map((s) => s.name).sort()).toEqual(["house-style", "product-page-style"]);
+		expect(sent[0]).toMatchObject({ description: expect.any(String), body: expect.any(String) });
 		const mine = (await route("skills")({ input: {}, user: author }, ctx)) as { success: boolean; items: unknown[]; roles: Array<{ id: string }>; mine: string[] };
 		expect(mine.items).toHaveLength(4);
 		expect(mine.roles.map((x) => x.id)).toContain("role:copywriter");
-		expect((mine as { rolesSource: string }).rolesSource).toBe("site");
+		expect((mine as unknown as { rolesSource: string }).rolesSource).toBe("site");
 		expect(mine.mine.sort()).toEqual(["house-style", "product-page-style"]);
 	});
 

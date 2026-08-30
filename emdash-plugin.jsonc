@@ -11,12 +11,12 @@
 	"description": "Chat with a site assistant from the EmDash toolbar. It sees the page you are on through your own browser and edits content through your own access — only from the toolbar, never from an API token or MCP.",
 	"keywords": ["premiumcms", "agent", "assistant", "toolbar", "ai"],
 
-	// The plugin only talks to the agent worker; the assistant itself acts
-	// through the site's MCP endpoint with a short-lived token minted by the
-	// signed-in editor's browser, and through that browser.
+	// The assistant is the instance's own agent (agents:run); it acts through
+	// the site's MCP endpoint with a short-lived token minted by the signed-in
+	// editor's browser, and through that browser.
 	// users:read lists the site's roles for the skills page and tells the
 	// plugin which role the chatting editor holds.
-	"capabilities": ["network:request", "users:read"],
+	"capabilities": ["network:request", "users:read", "agents:run"],
 	"allowedHosts": ["*.workers.dev", "*.premium-cms.com"],
 	"storage": {
 		"sessions": { "indexes": ["userId", "status", "updatedAt"] },
