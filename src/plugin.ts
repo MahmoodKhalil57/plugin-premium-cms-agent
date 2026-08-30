@@ -29,7 +29,7 @@
 
 import type { PluginContext, SandboxedPlugin } from "@premium-cms/emdash/plugin";
 
-import { DEFAULTS, readSettings, saveSettings, type Settings } from "./settings.js";
+import { DEFAULTS, readSettings, type Settings } from "./settings.js";
 import { SITE_ASSISTANT_SKILL } from "./skill.js";
 import { BUILTIN_ROLES, isSkill, MAX_SKILLS, parseSkill, skillsFor, type Skill } from "./skills.js";
 
@@ -360,19 +360,6 @@ const plugin: SandboxedPlugin = {
 			},
 		},
 
-		"settings/save": {
-			permission: "plugins:manage",
-			handler: async (routeCtx, ctx) => {
-				const who = sessionOnly(routeCtx);
-				if (!who.ok) return { success: false, error: who.error };
-				try {
-					await saveSettings(ctx, isRecord(routeCtx.input) ? routeCtx.input : {});
-				} catch (error) {
-					return { success: false, error: String(error instanceof Error ? error.message : error) };
-				}
-				return { success: true, settings: await readSettings(ctx) };
-			},
-		},
 
 		admin: {
 			permission: "content:edit_own",
@@ -388,14 +375,6 @@ const plugin: SandboxedPlugin = {
 					values?: Record<string, unknown>;
 				};
 				if (i.page === SKILLS_PAGE || (i.action_id ?? "").startsWith("skills.")) return skillsInteraction(ctx, who.user, i);
-				if (i.type === "form_submit" && i.action_id === "save_settings") {
-					try {
-						await saveSettings(ctx, i.values ?? {});
-					} catch (error) {
-						return buildPage(ctx, String(error instanceof Error ? error.message : error));
-					}
-					return buildPage(ctx, "Settings saved.");
-				}
 				return buildPage(ctx);
 			},
 		},
@@ -457,27 +436,9 @@ async function buildPage(ctx: PluginContext, notice?: string) {
 		rows: sessions.map((s) => ({ user: s.userName, status: s.status, page: s.pageUrl || "-", started: s.startedAt, expires: s.expiresAt })),
 	});
 
-	blocks.push({ type: "divider" });
 	blocks.push({
-		type: "form",
-		block_id: "settings",
-		fields: [
-			{ type: "toggle", action_id: "enabled", label: "Offer the assistant in the toolbar", initial_value: settings.enabled },
-			{ type: "text_input", action_id: "model", label: "Model", initial_value: settings.model },
-			{
-				type: "select",
-				action_id: "reasoning",
-				label: "Reasoning effort",
-				options: [
-					{ label: "High (slow, thorough)", value: "high" },
-					{ label: "Medium", value: "medium" },
-					{ label: "Low", value: "low" },
-				],
-				initial_value: settings.reasoning,
-			},
-			{ type: "number_input", action_id: "sessionHours", label: "Session length (hours)", initial_value: settings.sessionHours, min: 1, max: 24 },
-		],
-		submit: { label: "Save settings", action_id: "save_settings" },
+		type: "context",
+		text: `${settings.enabled ? "Offered in the toolbar" : "Not offered in the toolbar (disabled)"} · model ${settings.model} · ${settings.reasoning} reasoning · sessions last ${settings.sessionHours} h. Change these under Plugins → Site Agent → Settings.`,
 	});
 	return { blocks };
 }

@@ -24,6 +24,33 @@
 	},
 
 	"admin": {
+		"settingsSchema": {
+			"enabled": { "type": "boolean", "label": "Offer the assistant in the toolbar", "default": true },
+			"model": {
+				"type": "string",
+				"label": "Model",
+				"description": "Workers AI model id, or a provider/model slug routed through AI Gateway.",
+				"default": "@cf/zai-org/glm-5.3-flash"
+			},
+			"reasoning": {
+				"type": "select",
+				"label": "Reasoning effort",
+				"options": [
+					{ "value": "high", "label": "High (slow, thorough)" },
+					{ "value": "medium", "label": "Medium" },
+					{ "value": "low", "label": "Low" }
+				],
+				"default": "medium"
+			},
+			"sessionHours": {
+				"type": "number",
+				"label": "Session length (hours)",
+				"description": "How long a chat session — and the editor token minted for it — lives.",
+				"default": 8,
+				"min": 1,
+				"max": 24
+			}
+		},
 		"pages": [
 			{ "path": "/agent", "label": "Site Agent", "icon": "message-circle" },
 			{ "path": "/skills", "label": "Agent skills", "icon": "book-open" },

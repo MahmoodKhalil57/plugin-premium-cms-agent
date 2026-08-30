@@ -80,8 +80,10 @@ tools happen to execute in the connected tab.
 
 ## Settings
 
-Model, reasoning effort, session length (1–24 h). The admin page lists recent
-sessions.
+On the plugin's **Settings** page (Plugins → Site Agent → Settings): whether the
+assistant is offered in the toolbar, the model, the reasoning effort and the
+session length (1–24 h). The **Site Agent** page lists recent sessions; **Agent
+skills** manages the per-role skills.
 
 ## The runtime
 

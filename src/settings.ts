@@ -52,11 +52,3 @@ function clampHours(v: unknown): number {
 }
 
 /** Persist the fields present in `input`; an empty agent key keeps the stored one. */
-export async function saveSettings(ctx: PluginContext, input: Record<string, unknown>): Promise<void> {
-	if ("enabled" in input) await ctx.kv.set("settings:enabled", input.enabled === true || input.enabled === "true");
-	if (typeof input.model === "string" && input.model.trim()) await ctx.kv.set("settings:model", input.model.trim());
-	if (input.reasoning === "low" || input.reasoning === "medium" || input.reasoning === "high") {
-		await ctx.kv.set("settings:reasoning", input.reasoning);
-	}
-	if ("sessionHours" in input) await ctx.kv.set("settings:sessionHours", clampHours(input.sessionHours));
-}

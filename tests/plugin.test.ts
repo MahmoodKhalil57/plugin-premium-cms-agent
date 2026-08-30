@@ -79,7 +79,7 @@ const token = { token: `ec_pat_${"x".repeat(43)}`, tokenId: "tok1", expiresAt: "
 describe("session-only surface", () => {
 	it("refuses API tokens, readers and anonymous callers on every route", async () => {
 		const { ctx } = ctxWith({ settings });
-		for (const name of ["toolbar", "session", "session/end", "settings", "settings/save", "skills", "skills/save", "skills/delete"]) {
+		for (const name of ["toolbar", "session", "session/end", "settings", "skills", "skills/save", "skills/delete"]) {
 			for (const user of [viaToken, reader, undefined]) {
 				const r = (await route(name)({ input: {}, user }, ctx)) as { success: boolean; error?: string };
 				expect(r.success, `${name} for ${user ? (user.tokenAuth ? "token" : "reader") : "anonymous"}`).toBe(false);
