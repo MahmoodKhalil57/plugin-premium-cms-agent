@@ -290,7 +290,7 @@ const plugin: SandboxedPlugin = {
 					updatedAt: now(),
 				};
 				await ctx.storage.sessions!.put(session.id, session);
-				return { success: true, sessionId: session.id, agent: opened.agent, ticket: opened.ticket, host: siteUrl, expiresAt, skills: skills.map((k) => k.name) };
+				return { success: true, sessionId: session.id, agent: opened.agent, ticket: opened.ticket, host: runtimeHostFor(ctx, pageUrl, siteUrl), expiresAt, skills: skills.map((k) => k.name) };
 			},
 		},
 
@@ -401,6 +401,30 @@ const plugin: SandboxedPlugin = {
 		},
 	},
 };
+
+/**
+ * Where the panel reaches the runtime. Cookies and CORS are per origin, so on
+ * one of this site's git-served previews (`https://<rn>--<label>.<zone>`, the
+ * platform origin being `<rn>.<zone>`) the chat and the browser bridge use the
+ * page's own origin — the instance serves `/_emdash/agents/*` there too.
+ * Anywhere else it is the site URL. `pageUrl` comes from the browser, so it may
+ * only ever select one of this site's own hostnames.
+ */
+export function runtimeHostFor(ctx: PluginContext, pageUrl: string, siteUrl: string): string {
+	const platform = (ctx.site as { platformUrl?: string }).platformUrl;
+	if (!platform || !pageUrl) return siteUrl;
+	try {
+		const page = new URL(pageUrl);
+		const host = new URL(platform).hostname.toLowerCase();
+		const dot = host.indexOf(".");
+		if (page.protocol !== "https:" || dot <= 0) return siteUrl;
+		const m = page.hostname.toLowerCase().match(/^([a-z0-9]+)--([a-z0-9][a-z0-9-]{0,40})\.(.+)$/);
+		if (m && m[1] === host.slice(0, dot) && m[3] === host.slice(dot + 1)) return page.origin;
+	} catch {
+		// not a URL: fall through to the site
+	}
+	return siteUrl;
+}
 
 export default plugin;
 
